@@ -33,29 +33,43 @@ DHT_Unified dht(DATA_PIN, DHT22);
 // set up the 'temperature' and 'humidity' feeds
 AdafruitIO_Feed *temperature = io.feed("temperature");
 AdafruitIO_Feed *humidity = io.feed("humidity");
+AdafruitIO_Feed *battery = io.feed("battery");
+AdafruitIO_Feed *IOco2 = io.feed("co2");
+AdafruitIO_Feed *IOtvoc = io.feed("tvoc");
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 Adafruit_CCS811 ccs;
 
-void callback(char* topic, byte* payload, unsigned int length) {
- 
-  Serial.print("Message arrived in topic: ");
-  Serial.println(topic);
- 
-  Serial.print("Message:");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-
-  Serial.println();
-  Serial.println("-----------------------"); 
-}
+// Required for LIGHT_SLEEP_T delay mode
+// extern "C" {
+// #include "user_interface.h"
+// }
 
 void setup() {
   // start the serial connection
   Serial.begin(115200);
+  
+  // wait for serial monitor to open
+  while(! Serial);
 
+  // initialize dht22
+  dht.begin();
+
+	if(!ccs.begin()){
+    Serial.println("Failed to start air sensor! Please check your wiring.");
+    while(1);
+  }
+
+  //calibrate temperature sensor
+  while(!ccs.available());
+  float temp = ccs.calculateTemperature();
+  ccs.setTempOffset(temp - 25.0);
+  connectWifi();
+}
+
+void connectWifi() {
+  WiFi.mode(WIFI_STA);
 	WiFi.begin(WIFI_SSID, WIFI_PASS);
 	
 	while (WiFi.status() != WL_CONNECTED) {
@@ -63,12 +77,6 @@ void setup() {
 		Serial.print("Connecting to WiFi..");
 	}
 	Serial.println("Connected to the WiFi network");
- 
-  // wait for serial monitor to open
-  while(! Serial);
-
-  // initialize dht22
-  dht.begin();
 
   // connect to io.adafruit.com
   Serial.print("Connecting to Adafruit IO");
@@ -85,7 +93,6 @@ void setup() {
   Serial.println(io.statusText());
 
 	client.setServer(mqttServer, mqttPort);
-	client.setCallback(callback);
 
 	while (!client.connected()) {
     Serial.println("Connecting to MQTT...");
@@ -99,17 +106,6 @@ void setup() {
     }
 	}
 	client.publish("esp/test", "Hello from ESP8266");
-	client.subscribe("esp/test");
-
-	if(!ccs.begin()){
-    Serial.println("Failed to start air sensor! Please check your wiring.");
-    while(1);
-  }
-
-  //calibrate temperature sensor
-  while(!ccs.available());
-  float temp = ccs.calculateTemperature();
-  ccs.setTempOffset(temp - 25.0);
 }
 
 void loop() {
@@ -129,25 +125,14 @@ void loop() {
   Serial.print(celsius);
   Serial.println("C");
 
-  // save celsius to Adafruit IO
-  temperature->save(celsius);
-
   dht.humidity().getEvent(&event);
 
   Serial.print("humidity: ");
   Serial.print(event.relative_humidity);
   Serial.println("%");
 
-  // save humidity to Adafruit IO
-  humidity->save(event.relative_humidity);
-
-	char temp [5];
-	dtostrf(celsius, 4, 1, temp);
-	client.publish("esp/test", temp);
-
 	int rawLevel = analogRead(A0);
-
-	// the 10kΩ/47kΩ voltage divider reduces the voltage, so the ADC Pin can handle it
+  // the 10kΩ/47kΩ voltage divider reduces the voltage, so the ADC Pin can handle it
 	// According to Wolfram Alpha, this results in the following values:
 	// 10kΩ/(47kΩ+10kΩ)*  5v = 0.8772v
 	// 10kΩ/(47kΩ+10kΩ)*3.7v = 0.649v
@@ -158,45 +143,67 @@ void loop() {
 
 	// convert battery level to percent
 	int level = map(rawLevel, 500, 701, 0, 100);
-
-	// i'd like to report back the real voltage, so apply some math to get it back
+  
+  // i'd like to report back the real voltage, so apply some math to get it back
 	// 1. convert the ADC level to a float
 	// 2. divide by (R2[1] / R1 + R2)
 	// [1] the dot is a trick to handle it as float
 	float realVoltage = (float)rawLevel / 1000 / (10000. / (47000 + 10000));
-	
-	// build a nice string to send to influxdb or whatever you like
-	char dataLine[64];
-	// sprintf has no support for floats, but will be added later, so we need a String() for now
-	sprintf(dataLine, "voltage percent=%d,adc=%d,real=%s,charging=%d\n",
-			level < 150 ? level : 100, // cap level to 100%, just for graphing, i don't want to see your lab, when the battery actually gets to that level
-			rawLevel,
-			String(realVoltage, 3).c_str(),
-			rawLevel > 800 ? 1 : 0 // USB is connected if the reading is ~870, as the voltage will be 5V, so we assume it's charging
-	);
-	
-	Serial.print(dataLine);
-	client.publish("esp/test", dataLine);
 
+	float calcTemp = 0;
+  int co2 = 0, tvoc = 0;
 	if(ccs.available()){
-    float temp = ccs.calculateTemperature();
     if(!ccs.readData()){
       Serial.print("CO2: ");
-      Serial.print(ccs.geteCO2());
+      co2 = ccs.geteCO2();
+      Serial.print(co2);
       Serial.print("ppm, TVOC: ");
-      Serial.print(ccs.getTVOC());
+      tvoc = ccs.getTVOC();
+      Serial.print(tvoc);
       Serial.print("ppb   Temp:");
-      Serial.println(temp);
+      calcTemp = ccs.calculateTemperature(); 
+      Serial.println(calcTemp);
     }
     else{
       Serial.println("ERROR!");
       while(1);
     }
   }
+	
+  // save data to Adafruit IO
+	humidity->save(event.relative_humidity);
+  temperature->save(celsius);
+  battery->save(level < 150 ? level : 100);
+  IOco2->save(co2);
+  IOtvoc->save(tvoc);
 
-  // wait 5 seconds (5000 milliseconds == 5 seconds)
-  // delay(5000);
-  // put in 60 sec deepsleep
-  ESP.deepSleep(60e6);
+  // build a nice string to send to influxdb or whatever you like
+	char dataLine[150];
+	// sprintf has no support for floats, but will be added later, so we need a String() for now
+	sprintf(dataLine, "voltage percent=%d,adc=%d,real=%s,charging=%d \ncelsius:%.1f,humidity:%.1f,CO2=%dppm,TVOC:%dppb,CalcTemp:%.1f\n",
+			level < 150 ? level : 100, // cap level to 100%, just for graphing, i don't want to see your lab, when the battery actually gets to that level
+			rawLevel,
+			String(realVoltage, 3).c_str(),
+			rawLevel > 800 ? 1 : 0, // USB is connected if the reading is ~870, as the voltage will be 5V, so we assume it's charging
+      celsius,
+      event.relative_humidity,
+      co2,
+      tvoc,
+      calcTemp
+  );
+	
+
+	Serial.print(dataLine);
+	client.publish("esp/test", dataLine);
+
+  char tempMQTT [5], co2MQTT [5];
+	dtostrf(celsius, 4, 2, tempMQTT);
+	dtostrf(co2, 4, 0, co2MQTT);
+  client.publish("esp/temperature", tempMQTT);
+  client.publish("esp/co2", co2MQTT);
+
+  // WiFi.setSleepMode(WIFI_LIGHT_SLEEP);
+  // wait 10 seconds (10000 milliseconds == 5 seconds)
+  delay(10000);
+  Serial.println("-----------------------"); 
 }
-// CO2: 434ppm, TVOC: 5ppb   Temp:25.00
