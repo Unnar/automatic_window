@@ -1,9 +1,11 @@
+#include <PID.h>
 
 #define dir 2
-#define stp 16
+#define stp 12
 #define MS2 0
 #define EN 15
 #define MS1 13
+#define CLS 14
 
 
 char user_input;
@@ -17,6 +19,7 @@ void setup() {
   pinMode(MS1, OUTPUT);
   pinMode(MS2, OUTPUT);
   pinMode(EN, OUTPUT);
+  pinMode(CLS, INPUT_PULLUP);
   resetEDPins(); //Set step, direction, microstep and enable pins to default states
   Serial.begin(9600); //Open Serial connection for debugging
   Serial.println("Begin motor control");
@@ -49,6 +52,19 @@ void loop() {
       else if(user_input =='4')
       {
         ForwardBackwardStep();
+      }
+      else if(user_input =='5')
+      {
+        int num = 0;
+        int add;
+        while(Serial.available()){
+          num <<= 4;
+          add = Serial.read();
+          Serial.print("Read ");
+          Serial.println(add);
+          num += add;
+        }
+        Serial.println(tempPID.Compute(num));
       }
       else
       {
@@ -134,6 +150,29 @@ void ForwardBackwardStep()
     }
   }
   Serial.println("Enter new option:");
+  Serial.println();
+}
+
+//Reverse until door sensor kicks in
+void Close()
+{
+  Serial.println("Closing window.");
+  digitalWrite(dir, HIGH); //Pull direction pin high to move in "reverse"
+  while(digitalRead(CLS))
+  {
+    digitalWrite(stp,HIGH); //Trigger one step
+    delay(5);
+    digitalWrite(stp,LOW); //Pull step pin low so it can be triggered again
+    delay(5);
+  }
+  delay(1000);
+  for(x=1; x < 40; x++){
+    digitalWrite(stp,HIGH); //Trigger one step
+    delay(5);
+    digitalWrite(stp,LOW); //Pull step pin low so it can be triggered again
+    delay(5);
+  }
+  Serial.println("Enter new option");
   Serial.println();
 }
 
