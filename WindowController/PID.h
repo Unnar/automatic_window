@@ -5,10 +5,10 @@
 class PID {
     private:
         unsigned long lastTime;
-        double Input, Output, Setpoint;
-        double ITerm, lastInput;
+        double input, output, target;
+        double iTerm, lastInput;
         double kp, ki, kd;
-        int SampleTime;
+        int sampleTime;
         double outMin, outMax;
         bool inAuto; 
          
@@ -17,91 +17,91 @@ class PID {
 
         void initialize()
         {
-           lastInput = Input;
-           ITerm = Output;
-           if(ITerm > outMax) ITerm = outMax;
-           else if(ITerm < outMin) ITerm = outMin;
+           lastInput = input;
+           iTerm = output;
+           if(iTerm > outMax) iTerm = outMax;
+           else if(iTerm < outMin) iTerm = outMin;
         }
 
     public:
-        PID(double _Setpoint, double _kp, double _ki, double _kd, 
-            double _outMin, double _outMax, int _SampleTimeMillis) {
-            Setpoint = _Setpoint;
+        PID(double _target, double _kp, double _ki, double _kd, 
+            double _outMin, double _outMax, int _sampleTimeMillis) {
+            target = _target;
             kp = _kp;
             ki = _ki;
             kd = _kd;
             outMin = _outMin;
             outMax = _outMax;
-            SampleTime = _SampleTimeMillis;
+            sampleTime = _sampleTimeMillis;
             inAuto = true;
-            ITerm = 0;
+            iTerm = 0;
             lastInput = 0;
         }
 
-        double compute(double _Input)
+        double compute(double _input)
         {
            if(!inAuto) return -1;
-           Input = _Input;
+           input = _input;
            unsigned long now = millis();
            int timeChange = (now - lastTime);
-           if(timeChange>=SampleTime)
+           if(timeChange>=sampleTime)
            {
               /*Compute all the working error variables*/
-              double error = Setpoint - Input;
-              ITerm += (ki * error);
-              if(ITerm > outMax) ITerm = outMax;
-              else if(ITerm < outMin) ITerm = outMin;
-              double dInput = (Input - lastInput);
+              double error = target - input;
+              iTerm += (ki * error);
+              if(iTerm > outMax) iTerm = outMax;
+              else if(iTerm < outMin) iTerm = outMin;
+              double dInput = (input - lastInput);
          
               /*Compute PID Output*/
-              Output = kp * error + ITerm - kd * dInput;
-              if(Output > outMax) Output = outMax;
-              else if(Output < outMin) Output = outMin;
+              output = kp * error + iTerm - kd * dInput;
+              if(output > outMax) output = outMax;
+              else if(output < outMin) output = outMin;
          
               /*Remember some variables for next time*/
-              lastInput = Input;
+              lastInput = input;
               lastTime = now;
            }
-           return outMin+outMax-Output;
+           return outMin+outMax-output;
         }
          
-        void setTunings(double Kp, double Ki, double Kd)
+        void setTunings(double _kp, double _ki, double _kd)
         {
-          double SampleTimeInSec = ((double)SampleTime)/1000;
-           kp = Kp;
-           ki = Ki * SampleTimeInSec;
-           kd = Kd / SampleTimeInSec;
+          double sampleTimeInSec = ((double)sampleTime)/1000;
+           kp = _kp;
+           ki = _ki * sampleTimeInSec;
+           kd = _kd / sampleTimeInSec;
         }
          
-        void setSampleTime(int NewSampleTime)
+        void setSampleTime(int _sampleTime)
         {
-           if (NewSampleTime > 0)
+           if (_sampleTime > 0)
            {
-              double ratio  = (double)NewSampleTime
-                              / (double)SampleTime;
+              double ratio  = (double)_sampleTime
+                              / (double)sampleTime;
               ki *= ratio;
               kd /= ratio;
-              SampleTime = (unsigned long)NewSampleTime;
+              sampleTime = (unsigned long)_sampleTime;
            }
         }
          
-        void setOutputLimits(double Min, double Max)
+        void setOutputLimits(double mn, double mx)
         {
-           if(Min > Max) return;
-           outMin = Min;
-           outMax = Max;
+           if(mn > mx) return;
+           outMin = mn;
+           outMax = mx;
             
-           if(Output > outMax) Output = outMax;
-           else if(Output < outMin) Output = outMin;
+           if(output > outMax) output = outMax;
+           else if(output < outMin) output = outMin;
          
-           if(ITerm > outMax) ITerm = outMax;
-           else if(ITerm < outMin) ITerm = outMin;
+           if(iTerm > outMax) iTerm = outMax;
+           else if(iTerm < outMin) iTerm = outMin;
         }
 
          
-        void setMode(int Mode)
+        void setMode(int _mode)
         {
-            bool newAuto = (Mode == AUTOMATIC);
+            bool newAuto = (_mode == AUTOMATIC);
             if(newAuto && !inAuto)
             {  /*we just went from manual to auto*/
                 initialize();
@@ -109,9 +109,8 @@ class PID {
             inAuto = newAuto;
         }
 
-        void setSetpoint(double _Setpoint){
-            Setpoint = _Setpoint;
+        void setTarget(double _target){
+            target = _target;
         }
 
 };
-
