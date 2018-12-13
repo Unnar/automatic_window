@@ -1,16 +1,17 @@
-#include <PID.h>
+#include "PID.h"
 #include "config.h"
 
-AdafruitIO_Feed *temperature = io.feed("setTemp");
+AdafruitIO_Feed *setTemp = io.feed("setTemp");
+AdafruitIO_Feed *temperature = io.feed("temperature");
+AdafruitIO_Feed *co2 = io.feed("co2");
 WiFiClient espClient;
-PubSubClient client(espClient);
 
 //Stepper motor
-#define dir 1
-#define stp 3
-#define MS2 4
-#define EN 5
+#define dir 4
+#define stp 5
 #define MS1 15
+#define MS2 12
+#define EN 14
 
 //Door sensor
 #define CLS 13
@@ -24,6 +25,7 @@ PubSubClient client(espClient);
 #define MANUAL 0
 #define AUTO 1
 
+//Stepper motor min and max
 const int STEP_MIN = 0;
 const int STEP_MAX = 600;
 
@@ -33,11 +35,11 @@ int windowMode;
 
 const int NUM_MEDIAN = 7;
 
-double tKp = 1.0, tKi = 0, tKd = 1.0,
+/*double tKp = 1.0, tKi = 0, tKd = 1.0,
        tOutputMin = 0, tOutputMax = 100;
-
-PID tempPID(23, 1.0, 0, 1.0, 0, 100, 60000);
-PID co2PID(400, 1.0, 0, 1.0, 0, 100, 60000);
+*/
+PID tempPID(23, 120.0, 0.0, 12.0, 0, 600, 10000);
+PID co2PID(450, 20.0, 0, 3.0, 0, 600, 10000);
 
 double tempOutput;
 double co2Output;
@@ -47,45 +49,51 @@ int ind;
 
 int sort_asc(const void *cmp1, const void *cmp2)
 {
-  // Need to cast the void * to int *
-  double a = *((double *)cmp1);
-  double b = *((double *)cmp2);
-  return a < b ? -1 : (a > b ? 1 : 0);
+    // Need to cast the void * to double *
+    double a = *((double *)cmp1);
+    double b = *((double *)cmp2);
+    return a < b ? -1 : (a > b ? 1 : 0);
 }
 
-void callback(char* topic, byte* payload, unsigned int length){
-    if(strcmp(topic, "esp/temperature") == 0){
-        char value[length];
-        for(int i = 0; i < length; i++){
-            value[i] = (char)payload[i];
-        }
-        double temp = atof(value);
-        tempOutput = tempPID.compute(temp);
-    } else if(strcmp(topic, "esp/co2") == 0){ 
-        char value[length];
-        for(int i = 0; i < length; i++){
-            value[i] = (char)payload[i];
-        }
-        // Apply median filter to co2 value so 
-        // random spikes do not affect it badly
-        double co2 = atof(value);
-        medianFilter[ind] = co2;
-        double tmp[NUM_MEDIAN];
-        for(int i = 0; i < NUM_MEDIAN; i++){
-            tmp[i] = medianFilter[i];
-        }
-        qsort(tmp, NUM_MEDIAN, sizeof(tmp[0]), sort_asc);
-        ind = (ind+1)%NUM_MEDIAN;
-        co2Output = co2PID.compute(tmp[NUM_MEDIAN/2]);
+void setTempMessage(AdafruitIO_Data *data){
+    Serial.println("Handling Adafruit IO setTemperature message");
+  	int value = data->toInt();
+    Serial.print("Received ");
+    Serial.println(value);
+  	tempPID.setSetpoint(value);
+}
+
+void temperatureMessage(AdafruitIO_Data *data){
+    Serial.println("Handling Adafruit IO temperature message");
+    double value = data->toDouble();
+    Serial.print("Received ");
+    Serial.println(value);
+    if(windowMode == MANUAL) return;
+    tempOutput = tempPID.compute(value);
+}
+
+void co2Message(AdafruitIO_Data *data){
+    Serial.println("Handling Adafruit IO co2 message");
+    int value = data->toInt();
+    Serial.print("Received ");
+    Serial.println(value);
+    // Apply median filter to co2 value so 
+    // random spikes do not affect it badly
+    medianFilter[ind] = value;
+    double tmp[NUM_MEDIAN];
+    for(int i = 0; i < NUM_MEDIAN; i++){
+        tmp[i] = medianFilter[i];
     }
-}
-
-void handleMessage(AdafruitIO_Data *data){
-	int value = data->toInt();
-	tempPID.setSetpoint(value);
+    qsort(tmp, NUM_MEDIAN, sizeof(tmp[0]), sort_asc);
+    ind = (ind+1)%NUM_MEDIAN;
+    if(windowMode == MANUAL) return;
+    co2Output = co2PID.compute(tmp[NUM_MEDIAN/2]);
 }
 
 void setup() {
+    Serial.begin(115200);
+
+    while(!Serial);
     
     pinMode(stp, OUTPUT);
     pinMode(dir, OUTPUT);
@@ -99,40 +107,37 @@ void setup() {
     pinMode(BTN_B, INPUT_PULLUP);
     pinMode(BTN_C, INPUT_PULLUP);
     
-    resetEDPins();
-
-    close(); //Make sure window is closed at the start
 
     connectWifi();
 
     tempOutput = 0;
     co2Output = 0;
-
-    client.subscribe("esp/temperature");
-    client.subscribe("esp/co2"); 
-
-    client.setCallback(callback);
-
+    
     ind = 0;
     for(int i = 0; i < NUM_MEDIAN; i++){
-        medianFilter[i] = 400;
+        medianFilter[i] = 450;
     }
 
-	temperature->onMessage(handleMessage);
+	  setTemp->onMessage(setTempMessage);
+    temperature->onMessage(temperatureMessage);
+    co2->onMessage(co2Message);
 
     windowMode = AUTO;
+    
+    x = 1; 
+    closeWindow(); //Make sure window is closed at the start
 }
 
 void connectWifi() {
     WiFi.mode(WIFI_STA);
-	WiFi.begin(WIFI_SSID, WIFI_PASS);
-	
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
-		Serial.print("Connecting to WiFi..");
-	}
-	Serial.println("Connected to the WiFi network");
-
+  	WiFi.begin(WIFI_SSID, WIFI_PASS);
+  	
+  	while (WiFi.status() != WL_CONNECTED) {
+  		delay(500);
+  		Serial.println("Connecting to WiFi..");
+  	}
+  	Serial.println("Connected to the WiFi network");
+  
     // connect to io.adafruit.com
     Serial.print("Connecting to Adafruit IO");
     io.connect();
@@ -146,25 +151,20 @@ void connectWifi() {
     // we are connected
     Serial.println();
     Serial.println(io.statusText());
-
-	client.setServer(mqttServer, mqttPort);
-
-	while (!client.connected()) {
-        Serial.println("Connecting to MQTT...");
- 
-        if (client.connect("ESP8266Client", mqttUser, mqttPassword)) {
-            Serial.println("connected");
-        } else {
-            Serial.print("failed with state ");
-            Serial.print(client.state());
-            delay(2000);
-        }
-	}
 }
 
+int cnt = 0;
+
 void loop() {
-	client.loop();
     io.run();
+
+    if(cnt == 100) {
+        char buffr[100];
+        sprintf(buffr, "tempOutput is: %.1f\nco2Output is: %.1f\nWindow should be at: %d",
+                tempOutput, co2Output, x);
+        Serial.println(buffr);
+        cnt = 0;
+    }
     if(!digitalRead(BTN_A)) {
         windowMode = AUTO;
         tempPID.setMode(AUTO);       
@@ -177,7 +177,10 @@ void loop() {
             co2PID.setMode(MANUAL);
         }
         digitalWrite(dir, LOW);
-        takeStep();
+        while(!digitalRead(BTN_B) && x < STEP_MAX){
+            takeStep();
+            x++;
+        }
     }
     if(!digitalRead(BTN_C)) {
         if(windowMode == AUTO){
@@ -186,17 +189,26 @@ void loop() {
             co2PID.setMode(MANUAL);
         }
         digitalWrite(dir, HIGH);
-        takeStep();
+        while(!digitalRead(BTN_C) && x > STEP_MIN){
+            takeStep();
+            x--; 
+        }
     }
     if(windowMode == AUTO){
         int output = (int)max(tempOutput, co2Output);
+        output = tempOutput;
         if(output == 0) {
-            close(); 
+            closeWindow(); 
         }
         else {
-            stepToTarget(6*output);
+            if(x != output) {
+                Serial.print("Setting window to ");
+                Serial.println(output); 
+            }
+            stepToTarget(output);
         }
     }
+    cnt++;
 }
 
 
@@ -205,7 +217,7 @@ void stepToTarget(int target){
     if(target < STEP_MIN || target > STEP_MAX)
     {
         char fstring[40];
-        sprintf(fstring, "Target must be in range [%d, %d]", STEP_MIN, STEP_MAX);
+        sprintf(fstring, "Target must be in range [%d, %d] target was %d", STEP_MIN, STEP_MAX, target);
         Serial.println(fstring);
         return;
     }
@@ -219,8 +231,9 @@ void stepToTarget(int target){
 }
 
 //Reverse until door sensor kicks in
-void close()
+void closeWindow()
 {
+    if(x == 0) return;
     Serial.println("Closing window.");
     digitalWrite(dir, HIGH); //Pull direction pin high to move in "reverse"
     while(digitalRead(CLS))
