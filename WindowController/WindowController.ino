@@ -212,7 +212,7 @@ void loop() {
             pos--; 
         }
         // If button was pressed for < ~50ms then close the window
-        if(pos-lastPos <= 5){
+        if(lastPos-pos <= 5){
             closeWindow();
         }
     }
