@@ -1,32 +1,35 @@
-#include "PID.h"
+#include "PID_v1.h"
 #include "config.h"
 
 AdafruitIO_Feed *setTemp = io.feed("setTemp");
 AdafruitIO_Feed *temperature = io.feed("temperature");
 AdafruitIO_Feed *co2 = io.feed("co2");
 
-//Stepper motor
+// Stepper motor
 #define dir 4
 #define stp 5
 #define MS1 15
 #define MS2 12
 #define EN 14
 
-//Door sensor
+// Door sensor
 #define CLS 13
 
-//Feather buttons
+// Feather buttons
 #define BTN_A 0
 #define BTN_B 16
 #define BTN_C 2
 
-//Whether window is in manual or automatic
+// Whether window is in manual or automatic
 #define MANUAL 0
 #define AUTO 1
 
-//Stepper motor min and max
+// Stepper motor min and max
 const int STEP_MIN = 0;
 const int STEP_MAX = 600;
+
+// Stepper motor pulse width in millis
+const int PULSE_WIDTH = 5;
 
 // Position of the stepper motor
 int pos;
@@ -39,18 +42,13 @@ const int NUM_MEDIAN = 7;
 double medianFilter[NUM_MEDIAN];
 int ind;
 
-/*double tKp = 1.0, tKi = 0, tKd = 1.0,
-       tOutputMin = 0, tOutputMax = 100;
-*/
-
 // PID controller for temperature
-PID tempPID(23, 120.0, 0.0, 12.0, 0, 600, 10000);
+double tempInput, tempOutput, tempSetpoint;
+PID tempPID(&tempInput, &tempOutput, &tempSetpoint, 0, 0, 0, 1, 1);
 // PID controller for co2
-PID co2PID(450, 20.0, 0, 3.0, 0, 600, 10000);
+double co2Input, co2Output, co2Setpoint;
+PID co2PID(&co2Input, &co2Output, &co2Setpoint, 0, 0, 0, 1, 1);
 
-// Store the values from the PID controllers
-double tempOutput;
-double co2Output;
 
 // Comparison function for qsort
 int sort_asc(const void *cmp1, const void *cmp2) {
@@ -67,7 +65,7 @@ void setTempMessage(AdafruitIO_Data *data) {
   	int value = data->toInt();
     Serial.print("Received ");
     Serial.println(value);
-  	tempPID.setTarget(value);
+  	tempSetpoint = value;
 }
 
 void temperatureMessage(AdafruitIO_Data *data) {
@@ -75,8 +73,9 @@ void temperatureMessage(AdafruitIO_Data *data) {
     double value = data->toDouble();
     Serial.print("Received ");
     Serial.println(value);
-    if(windowMode == MANUAL) return;
-    tempOutput = tempPID.compute(value);
+    if(value != value) return; // value is NaN so ignore it
+    tempInput = value;
+    tempPID.Compute();
 }
 
 void co2Message(AdafruitIO_Data *data) {
@@ -93,8 +92,9 @@ void co2Message(AdafruitIO_Data *data) {
     }
     qsort(tmp, NUM_MEDIAN, sizeof(tmp[0]), sort_asc);
     ind = (ind+1)%NUM_MEDIAN;
-    if(windowMode == MANUAL) return;
-    co2Output = co2PID.compute(tmp[NUM_MEDIAN/2]);
+    if(tmp[NUM_MEDIAN/2] != tmp[NUM_MEDIAN/2]) return; // value is NaN so ignore it
+    co2Input = tmp[NUM_MEDIAN/2];
+    co2PID.Compute();
 }
 
 void setup() {
@@ -117,8 +117,21 @@ void setup() {
 
     connectWifi();
 
+    // Set initial values for PID controllers
+    tempInput = 0;
     tempOutput = 0;
+    tempSetpoint = 23;
+    tempPID.SetOutputLimits(0, 600);
+    tempPID.SetSampleTime(10000);
+    tempPID.SetTunings(20.0, 2.0, 1.0);
+
+    co2Input = 0;
     co2Output = 0;
+    co2Setpoint = 450;
+    co2PID.SetOutputLimits(0, 600);
+    co2PID.SetSampleTime(10000);
+    co2PID.SetTunings(20.0, 0, 2.0);
+
     
     ind = 0;
     for(int i = 0; i < NUM_MEDIAN; i++){
@@ -167,16 +180,17 @@ void loop() {
     // If user presses A sets the window mode to automatic
     if(!digitalRead(BTN_A)) {
         windowMode = AUTO;
-        tempPID.setMode(AUTO);       
-        co2PID.setMode(AUTO);       
+        tempPID.SetMode(AUTO);       
+        co2PID.SetMode(AUTO);       
     }
     // Manually open the window
     if(!digitalRead(BTN_B)) {
         if(windowMode == AUTO){
             windowMode = MANUAL;
-            tempPID.setMode(MANUAL);
-            co2PID.setMode(MANUAL);
+            tempPID.SetMode(MANUAL);
+            co2PID.SetMode(MANUAL);
         }
+        digitalWrite(EN, LOW);
         digitalWrite(dir, LOW);
         while(!digitalRead(BTN_B) && pos < STEP_MAX) {
             takeStep();
@@ -187,10 +201,11 @@ void loop() {
     if(!digitalRead(BTN_C)) {
         if(windowMode == AUTO){
             windowMode = MANUAL;
-            tempPID.setMode(MANUAL);
-            co2PID.setMode(MANUAL);
+            tempPID.SetMode(MANUAL);
+            co2PID.SetMode(MANUAL);
         }
         int lastPos = pos;
+        digitalWrite(EN, LOW);
         digitalWrite(dir, HIGH);
         while(!digitalRead(BTN_C) && pos > STEP_MIN) {
             takeStep();
@@ -204,7 +219,8 @@ void loop() {
     // Automatic control for the window
     if(windowMode == AUTO) {
         int output = (int)max(tempOutput, co2Output);
-        output = tempOutput;
+        // co2 readings are too inconsistent, only use temperature for now
+        output = tempOutput; 
         if(output == 0) {
             closeWindow(); 
         }
@@ -213,10 +229,12 @@ void loop() {
                 Serial.print("Setting window to ");
                 Serial.println(output); 
             }
+            digitalWrite(EN, LOW);
             stepToTarget(output);
         }
     }
     cnt++;
+    resetEDPins();
 }
 
 
@@ -228,8 +246,11 @@ void stepToTarget(int target){
         Serial.println(fstring);
         return;
     }
+
+    // Determine the direction we should go in
     if(pos < target)  digitalWrite(dir, LOW);
     else            digitalWrite(dir, HIGH);
+    
     for(int i = 0; i < abs(pos-target); i++) {
         takeStep();
     }
@@ -237,10 +258,11 @@ void stepToTarget(int target){
     pos = target;
 }
 
-//Reverse until door sensor kicks in
+// Reverse until door sensor kicks in
 void closeWindow() {
     if(pos == 0) return;
     Serial.println("Closing window.");
+    digitalWrite(EN, LOW);
     digitalWrite(dir, HIGH); //Pull direction pin high to move in "reverse"
     while(digitalRead(CLS)) {
         takeStep();
@@ -251,13 +273,15 @@ void closeWindow() {
         takeStep();
     }
     pos = 0; //Door is now closed so pos resets to 0
+    digitalWrite(EN, HIGH);
 }
 
+// Take a single step
 void takeStep() {
     digitalWrite(stp,HIGH); //Trigger one step
-    delay(5);
+    delay(PULSE_WIDTH);
     digitalWrite(stp,LOW); //Pull step pin low so it can be triggered again
-    delay(5);
+    delay(PULSE_WIDTH);
 }
 
 //Reset Easy Driver pins to default states
